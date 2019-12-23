@@ -1,11 +1,14 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using AutoMapper;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using MimicAPI.Database;
 using MimicAPI.Helpers;
 using MimicAPI.Models;
+using MimicAPI.Models.DTO;
 using MimicAPI.Repositories.Contracts;
 using Newtonsoft.Json;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace MimicAPI.Controllers
@@ -14,39 +17,83 @@ namespace MimicAPI.Controllers
     public class PalavrrasController : ControllerBase
     {
         private readonly IPalavraRepository _repository;
+        private readonly IMapper _mapper;
 
-        public PalavrrasController(IPalavraRepository repository)
+        public PalavrrasController(IPalavraRepository repository, IMapper mapper)
         {
             _repository = repository;
+            _mapper = mapper;
         }
 
         // /api/palavras?data=2019-05-22
         // /api/palavras
         // /api/palavras?pagNumero=1&pagRegistro=2
-        [Route("")]
-        [HttpGet]
+        [HttpGet("", Name = "ObterTodas")]
         public ActionResult ObterTodas([FromQuery]PalavraUrlQuery query)
         {
             var item = _repository.ObterPalavras(query);
 
-            if (query.PagNumero > item.Paginacao.TotalPaginas)
-            {
+            if (item.Results.Count == 0)
                 return NotFound();
+
+            PaginationList<PalavraDTO> lista = CriarLinksListPalavraDTO(query, item);
+
+            return Ok(lista);
+        }
+
+        private PaginationList<PalavraDTO> CriarLinksListPalavraDTO(PalavraUrlQuery query, PaginationList<Palavra> item)
+        {
+            // Automapper
+            var lista = _mapper.Map<PaginationList<Palavra>, PaginationList<PalavraDTO>>(item);
+            foreach (var palavra in lista.Results)
+            {
+                palavra.Links = new List<LinkDTO>();
+                palavra.Links.Add(new LinkDTO("self", Url.Link("ObterPalavra", new { id = palavra.Id }), "GET"));
             }
 
-            Response.Headers.Add("X-Pagination", JsonConvert.SerializeObject(item.Paginacao));
+            lista.Links.Add(new LinkDTO("self", Url.Link("ObterTodas", query), "GET"));
 
-            return Ok(item.ToList());
+            if (item.Paginacao != null)
+            {
+                Response.Headers.Add("X-Pagination", JsonConvert.SerializeObject(item.Paginacao));
+
+                if (query.PagNumero + 1 <= item.Paginacao.TotalPaginas)
+                {
+                    var queryString = new PalavraUrlQuery() { PagNumero = query.PagNumero + 1, PagRegistro = query.PagRegistro, Data = query.Data };
+                    lista.Links.Add(new LinkDTO("next", Url.Link("ObterTodas", queryString), "GET"));
+                }
+
+                if (query.PagNumero - 1 > 0)
+                {
+                    var queryString = new PalavraUrlQuery() { PagNumero = query.PagNumero - 1, PagRegistro = query.PagRegistro, Data = query.Data };
+                    lista.Links.Add(new LinkDTO("next", Url.Link("ObterTodas", queryString), "GET"));
+                }
+            }
+
+            return lista;
         }
 
         // WEB ->  /api/palavras/5
-        [Route("{id}")]
-        [HttpGet]
+        // [Route("{id}")]
+        [HttpGet("{id}", Name ="ObterPalavra")]
         public ActionResult Obter(int id)
         {
             var obj = _repository.Obter(id);
             if (obj == null) return NotFound();
-            return Ok(obj);
+
+            // Automapper
+            PalavraDTO palavraDTO = _mapper.Map<Palavra, PalavraDTO>(obj);
+            palavraDTO.Links.Add(
+                new LinkDTO("self", Url.Link("ObterPalavra", new { id = palavraDTO.Id }), "GET")
+            );
+            palavraDTO.Links.Add(
+                new LinkDTO("update", Url.Link("AtualizarPalavra", new { id = palavraDTO.Id }), "UPDATE")
+            );
+            palavraDTO.Links.Add(
+                new LinkDTO("delete", Url.Link("ExcluirPalavra", new { id = palavraDTO.Id }), "DELETE")
+            );
+
+            return Ok(palavraDTO);
         }
 
         //  api/palavras
@@ -54,27 +101,54 @@ namespace MimicAPI.Controllers
         [HttpPost]
         public ActionResult Cadastrar([FromBody] Palavra palavra)
         {
+            if (palavra == null)
+                return BadRequest();
+
+            if (!ModelState.IsValid)
+                return UnprocessableEntity(ModelState); // Erro 422
+
+            palavra.Criado = DateTime.Now;
+            palavra.Ativo = true;
+
             _repository.Cadastrar(palavra);
+
+            PalavraDTO palavraDTO = _mapper.Map<Palavra, PalavraDTO>(palavra);
+            palavraDTO.Links.Add(
+                new LinkDTO("self", Url.Link("ObterPalavra", new { id = palavraDTO.Id }), "GET")
+            );
+
             return Created($"/api/palavras/{palavra.Id}", palavra);
         }
 
         // /api/palavras/1  (PUT: id, nome, ativo, pontuacao, criacao)
-        [Route("{id}")]
-        [HttpPut]
+        [HttpPut("{id}", Name = "AtualizarPalavra")]
         public ActionResult Atualizar(int id, [FromBody] Palavra palavra)
         {
             var obj = _repository.Obter(id);
             if (obj == null) return NotFound();
 
+            if (palavra == null)
+                return BadRequest();
+
+            if (!ModelState.IsValid)
+                return UnprocessableEntity(ModelState); // Erro 422
+
             palavra.Id = id;
+            palavra.Ativo = obj.Ativo;
+            palavra.Criado = obj.Criado;
+            palavra.Atualizado = DateTime.Now;
             _repository.Atualizar(palavra);
+
+            PalavraDTO palavraDTO = _mapper.Map<Palavra, PalavraDTO>(palavra);
+            palavraDTO.Links.Add(
+                new LinkDTO("self", Url.Link("ObterPalavra", new { id = palavraDTO.Id }), "GET")
+            );
 
             return Ok();
         }
 
         // /api/palavras/1 
-        [Route("{id}")]
-        [HttpDelete]
+        [HttpDelete("{id}", Name = "ExcluirPalavra")]
         public ActionResult Deletar(int id)
         {
             var palavra = _repository.Obter(id);
